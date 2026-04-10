@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Teleprompter</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 20px; background: #f5f5f5; color: #222; }
+
+  /* ── Edit Screen ── */
+  #edit-screen { max-width: 700px; margin: 60px auto; padding: 0 20px; }
+  #edit-screen h1 { font-size: 28px; margin-bottom: 16px; }
+  #script-input {
+    width: 100%; min-height: 300px; padding: 16px; font-size: 20px;
+    border: 2px solid #ccc; border-radius: 8px; resize: vertical;
+    font-family: inherit; line-height: 1.6;
+  }
+  #script-input:focus { outline: none; border-color: #4a90d9; }
+  .btn {
+    display: inline-block; padding: 12px 28px; font-size: 20px; font-weight: 600;
+    border: none; border-radius: 8px; cursor: pointer; transition: background .15s;
+  }
+  .btn-primary { background: #4a90d9; color: #fff; margin-top: 16px; }
+  .btn-primary:hover { background: #3a7bc8; }
+
+  /* ── Prompter Screen ── */
+  #prompter-screen { display: none; position: fixed; inset: 0; overflow: hidden; background: #000; }
+  #camera-feed { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #dim-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.45); pointer-events: none; }
+  #text-track {
+    position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+    width: 65%; padding-top: 100vh;
+    font-size: 48px; font-weight: 700; line-height: 1.5; color: #fff;
+    text-shadow: 0 2px 6px rgba(0,0,0,.7); white-space: pre-wrap; word-wrap: break-word;
+    pointer-events: none;
+  }
+
+  /* ── Controls Bar ── */
+  #controls {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    display: flex; align-items: center; gap: 18px; padding: 14px 20px;
+    background: rgba(0,0,0,.55); backdrop-filter: blur(6px);
+    font-size: 15px; color: #eee; flex-wrap: wrap;
+  }
+  #controls label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  #controls input[type=range] { width: 100px; }
+  .btn-sm { padding: 8px 16px; font-size: 15px; border-radius: 6px; font-weight: 600; }
+  .btn-rec { background: #e53935; color: #fff; }
+  .btn-rec.recording { background: #999; }
+  .btn-back { background: #555; color: #fff; }
+  .btn-pause { background: #f9a825; color: #222; }
+</style>
+</head>
+<body>
+
+<!-- Edit Screen -->
+<div id="edit-screen">
+  <h1>Teleprompter</h1>
+  <textarea id="script-input" placeholder="Paste your script here…"></textarea>
+  <button class="btn btn-primary" id="start-btn">Start Prompter</button>
+</div>
+
+<!-- Prompter Screen -->
+<div id="prompter-screen">
+  <video id="camera-feed" autoplay muted playsinline></video>
+  <div id="dim-overlay"></div>
+  <div id="text-track"></div>
+  <div id="controls">
+    <label>Speed <input type="range" id="speed-slider" min="0.5" max="8" step="0.5" value="2"></label>
+    <label>Size <input type="range" id="size-slider" min="24" max="96" step="2" value="48"></label>
+    <label>Dim <input type="range" id="dim-slider" min="0" max="0.85" step="0.05" value="0.45"></label>
+    <label><input type="checkbox" id="mirror-check"> Mirror</label>
+    <button class="btn btn-sm btn-pause" id="pause-btn">Pause</button>
+    <button class="btn btn-sm btn-rec" id="rec-btn">REC</button>
+    <button class="btn btn-sm btn-back" id="back-btn">Back</button>
+  </div>
+</div>
+
+<script>
+  const editScreen = document.getElementById('edit-screen');
+  const prompterScreen = document.getElementById('prompter-screen');
+  const scriptInput = document.getElementById('script-input');
+  const textTrack = document.getElementById('text-track');
+  const cameraFeed = document.getElementById('camera-feed');
+  const dimOverlay = document.getElementById('dim-overlay');
+  const speedSlider = document.getElementById('speed-slider');
+  const sizeSlider = document.getElementById('size-slider');
+  const dimSlider = document.getElementById('dim-slider');
+  const mirrorCheck = document.getElementById('mirror-check');
+  const recBtn = document.getElementById('rec-btn');
+  const pauseBtn = document.getElementById('pause-btn');
+  const backBtn = document.getElementById('back-btn');
+  const startBtn = document.getElementById('start-btn');
+
+  let stream = null;
+  let scrollY = 0;
+  let scrolling = true;
+  let rafId = null;
+  let lastTime = 0;
+  let mediaRecorder = null;
+  let recordedChunks = [];
+
+  /* ── Start Prompter ── */
+  startBtn.addEventListener('click', async () => {
+    const text = scriptInput.value.trim();
+    if (!text) { scriptInput.focus(); return; }
+    textTrack.textContent = text;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: true });
+      cameraFeed.srcObject = stream;
+    } catch (e) {
+      alert('Camera access is needed for the teleprompter background.');
+      return;
+    }
+    editScreen.style.display = 'none';
+    prompterScreen.style.display = 'block';
+    scrollY = 0;
+    textTrack.style.transform = 'translateX(-50%) translateY(0px)';
+    scrolling = true;
+    pauseBtn.textContent = 'Pause';
+    lastTime = 0;
+    rafId = requestAnimationFrame(tick);
+  });
+
+  /* ── Scroll Loop ── */
+  function tick(ts) {
+    if (lastTime === 0) lastTime = ts;
+    const dt = (ts - lastTime) / 1000;
+    lastTime = ts;
+    if (scrolling) {
+      scrollY -= parseFloat(speedSlider.value) * 60 * dt;
+      textTrack.style.transform = `translateX(-50%) translateY(${scrollY}px)`;
+    }
+    rafId = requestAnimationFrame(tick);
+  }
+
+  /* ── Controls ── */
+  sizeSlider.addEventListener('input', () => { textTrack.style.fontSize = sizeSlider.value + 'px'; });
+  dimSlider.addEventListener('input', () => { dimOverlay.style.background = `rgba(0,0,0,${dimSlider.value})`; });
+  mirrorCheck.addEventListener('change', () => { cameraFeed.style.transform = mirrorCheck.checked ? 'scaleX(-1)' : ''; });
+  pauseBtn.addEventListener('click', () => {
+    scrolling = !scrolling;
+    pauseBtn.textContent = scrolling ? 'Pause' : 'Play';
+  });
+
+  /* ── REC ── */
+  recBtn.addEventListener('click', () => {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+      recBtn.textContent = 'REC';
+      recBtn.classList.remove('recording');
+      return;
+    }
+    // Capture the canvas-composited stream isn't needed; record camera+audio directly
+    recordedChunks = [];
+    const recStream = cameraFeed.srcObject;
+    mediaRecorder = new MediaRecorder(recStream, { mimeType: getSupportedMime() });
+    mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'teleprompter-' + new Date().toISOString().slice(0,19).replace(/:/g,'-') + '.webm';
+      a.click();
+      URL.revokeObjectURL(url);
+    };
+    mediaRecorder.start();
+    recBtn.textContent = 'STOP';
+    recBtn.classList.add('recording');
+  });
+
+  function getSupportedMime() {
+    const types = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4'];
+    return types.find(t => MediaRecorder.isTypeSupported(t)) || '';
+  }
+
+  /* ── Back ── */
+  backBtn.addEventListener('click', () => {
+    cancelAnimationFrame(rafId);
+    if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    cameraFeed.srcObject = null;
+    prompterScreen.style.display = 'none';
+    editScreen.style.display = 'block';
+  });
+</script>
+</body>
+</html>
