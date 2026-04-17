@@ -77,6 +77,12 @@
         <option value="down">Top → Bottom</option>
       </select>
     </label>
+    <label>Align
+      <select id="align-select">
+        <option value="left" selected>Left</option>
+        <option value="center">Center</option>
+      </select>
+    </label>
     <button class="btn btn-sm btn-pause" id="pause-btn">Pause</button>
     <button class="btn btn-sm btn-rec" id="rec-btn">REC</button>
     <button class="btn btn-sm btn-back" id="back-btn">Back</button>
@@ -95,6 +101,8 @@
   const dimSlider = document.getElementById('dim-slider');
   const mirrorCheck = document.getElementById('mirror-check');
   const directionSelect = document.getElementById('direction-select');
+  const alignSelect = document.getElementById('align-select');
+  let scriptText = '';
   const recBtn = document.getElementById('rec-btn');
   const pauseBtn = document.getElementById('pause-btn');
   const backBtn = document.getElementById('back-btn');
@@ -112,7 +120,8 @@
   startBtn.addEventListener('click', async () => {
     const text = scriptInput.value.trim();
     if (!text) { scriptInput.focus(); return; }
-    textTrack.textContent = text;
+    scriptText = text;
+    renderText();
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: true });
       cameraFeed.srcObject = stream;
@@ -128,6 +137,18 @@
     lastTime = 0;
     rafId = requestAnimationFrame(tick);
   });
+
+  function renderText() {
+    // In down-mode we reverse the line order so line 1 enters the viewport first
+    // from the top (since the block starts above the viewport and moves downward,
+    // the BOTTOM line of the block is the first thing to appear).
+    if (directionSelect.value === 'down') {
+      textTrack.textContent = scriptText.split('\n').reverse().join('\n');
+    } else {
+      textTrack.textContent = scriptText;
+    }
+    textTrack.style.textAlign = alignSelect.value;
+  }
 
   function resetScroll() {
     if (directionSelect.value === 'down') {
@@ -156,7 +177,8 @@
   sizeSlider.addEventListener('input', () => { textTrack.style.fontSize = sizeSlider.value + 'px'; });
   dimSlider.addEventListener('input', () => { dimOverlay.style.background = `rgba(0,0,0,${dimSlider.value})`; });
   mirrorCheck.addEventListener('change', () => { cameraFeed.style.transform = mirrorCheck.checked ? 'scaleX(-1)' : ''; });
-  directionSelect.addEventListener('change', resetScroll);
+  directionSelect.addEventListener('change', () => { renderText(); resetScroll(); });
+  alignSelect.addEventListener('change', renderText);
   pauseBtn.addEventListener('click', () => {
     scrolling = !scrolling;
     pauseBtn.textContent = scrolling ? 'Pause' : 'Play';
